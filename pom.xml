@@ -1,0 +1,602 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.thales.ife.avionics</groupId>
+	<artifactId>sparkstreaming</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>jar</packaging>
+
+	<name>sparkstreaming</name>
+	<url>http://maven.apache.org</url>
+
+
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<scala.version>2.11</scala.version>
+		<spark.version>2.0.0</spark.version>
+		<java.version>1.8</java.version>
+	</properties>
+
+	<dependencies>
+
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-core_${scala.version}</artifactId>
+			<version>${spark.version}</version>
+			<scope>provided</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-sql_${scala.version}</artifactId>
+			<version>${spark.version}</version>
+			<scope>provided</scope>
+		</dependency>
+
+
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-hive_${scala.version}</artifactId>
+			<version>${spark.version}</version>
+			<scope>provided</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-streaming_${scala.version}</artifactId>
+			<version>${spark.version}</version>
+			<scope>provided</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.spark</groupId>
+			<artifactId>spark-streaming-kafka-0-10-assembly_2.11</artifactId>
+			<version>2.0.0</version>
+		</dependency>
+
+		<dependency>
+			<groupId>com.googlecode.json-simple</groupId>
+			<artifactId>json-simple</artifactId>
+			<version>1.1.1</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.kafka</groupId>
+			<artifactId>connect-json</artifactId>
+			<version>0.10.0.0</version>
+		</dependency>
+
+
+		<dependency>
+			<groupId>junit</groupId>
+			<artifactId>junit</artifactId>
+			<version>3.8.1</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<!-- Configure maven-compiler-plugin to use the desired Java version -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<version>3.1</version>
+				<configuration>
+					<source>${java.version}</source>
+					<target>${java.version}</target>
+				</configuration>
+			</plugin>
+
+			<!-- Use build-helper-maven-plugin to add Scala source and test source 
+				directories -->
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<version>1.10</version>
+				<executions>
+					<execution>
+						<id>add-source</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>src/main/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+					<execution>
+						<id>add-test-source</id>
+						<phase>generate-test-sources</phase>
+						<goals>
+							<goal>add-test-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>src/test/scala</source>
+							</sources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- Use scala-maven-plugin for Scala support -->
+			<plugin>
+				<groupId>net.alchim31.maven</groupId>
+				<artifactId>scala-maven-plugin</artifactId>
+				<version>3.2.2</version>
+				<executions>
+					<execution>
+						<goals>
+							<!-- Need to specify this explicitly, otherwise plugin won't be called 
+								when doing e.g. mvn compile -->
+							<goal>compile</goal>
+							<goal>testCompile</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+</project>
+
+**********
+
+package com.thales.ife.avionics.sparkstreaming;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.errors.WakeupException;
+
+import java.util.Arrays;
+import java.util.Properties;
+import java.util.Scanner;
+
+/**
+ * Created by sunilpatil on 12/25/16.
+ */
+public class Consumer {
+    private static Scanner in;
+
+    public static void main(String[] argv)throws Exception{
+        if (argv.length != 2) {
+            System.err.printf("Usage: %s <topicName> <groupId>\n");
+            System.exit(-1);
+        }
+        in = new Scanner(System.in);
+        String topicName = argv[0];
+        String groupId = argv[1];
+
+        ConsumerThread consumerRunnable = new ConsumerThread(topicName,groupId);
+        consumerRunnable.start();
+        String line = "";
+        while (!line.equals("exit")) {
+            line = in.next();
+        }
+        consumerRunnable.getKafkaConsumer().wakeup();
+        System.out.println("Stopping consumer .....");
+        consumerRunnable.join();
+    }
+
+    private static class ConsumerThread extends Thread{
+        private String topicName;
+        private String groupId;
+        private KafkaConsumer<String,JsonNode> kafkaConsumer;
+
+        public ConsumerThread(String topicName, String groupId){
+            this.topicName = topicName;
+            this.groupId = groupId;
+        }
+        public void run() {
+            Properties configProperties = new Properties();
+            configProperties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9093");
+            configProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArrayDeserializer");
+            configProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.connect.json.JsonDeserializer");
+            configProperties.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+            configProperties.put(ConsumerConfig.CLIENT_ID_CONFIG, "simple");
+
+
+            //Figure out where to start processing messages from
+            kafkaConsumer = new KafkaConsumer<String, JsonNode>(configProperties);
+            kafkaConsumer.subscribe(Arrays.asList(topicName));
+            ObjectMapper mapper = new ObjectMapper();
+
+            //Start processing messages
+            try {
+                while (true) {
+                    ConsumerRecords<String, JsonNode> records = kafkaConsumer.poll(10);
+                    for (ConsumerRecord<String, JsonNode> record : records) {
+                        JsonNode jsonNode = record.value();
+                        System.out.println(mapper.treeToValue(jsonNode,Contact.class));
+                    }
+                }
+            }catch(WakeupException ex){
+                System.out.println("Exception caught " + ex.getMessage());
+            } catch (JsonProcessingException e) {
+                e.printStackTrace();
+            } finally{
+                kafkaConsumer.close();
+                System.out.println("After closing KafkaConsumer");
+            }
+        }
+        public KafkaConsumer<String,JsonNode> getKafkaConsumer(){
+            return this.kafkaConsumer;
+        }
+    }
+}
+
+**************
+package com.thales.ife.avionics.sparkstreaming;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.StringTokenizer;
+
+public class Contact {
+    private int contactId;
+    private String firstName;
+    private String lastName;
+
+    public Contact(){
+
+    }
+    public Contact(int contactId, String firstName, String lastName) {
+        this.contactId = contactId;
+        this.firstName = firstName;
+        this.lastName = lastName;
+    }
+
+    public void parseString(String csvStr){
+        StringTokenizer st = new StringTokenizer(csvStr,",");
+        contactId = Integer.parseInt(st.nextToken());
+        firstName = st.nextToken();
+        lastName = st.nextToken();
+    }
+
+
+    public int getContactId() {
+        return contactId;
+    }
+
+    public void setContactId(int contactId) {
+        this.contactId = contactId;
+    }
+
+    public String getFirstName() {
+        return firstName;
+    }
+
+    public void setFirstName(String firstName) {
+        this.firstName = firstName;
+    }
+
+    public String getLastName() {
+        return lastName;
+    }
+
+    public void setLastName(String lastName) {
+        this.lastName = lastName;
+    }
+
+    @Override
+    public String toString() {
+        return "Contact{" +
+                "contactId=" + contactId +
+                ", firstName='" + firstName + '\'' +
+                ", lastName='" + lastName + '\'' +
+                '}';
+    }
+
+    public static void main(String[] argv)throws Exception{
+        ObjectMapper mapper = new ObjectMapper();
+        Contact contact = new Contact();
+        contact.setContactId(1);
+        contact.setFirstName("Sachin");
+        contact.setLastName("Tendulkar");
+        System.out.println(mapper.writeValueAsString(contact));
+        contact.parseString("1,Rahul,Dravid");
+        System.out.println(mapper.writeValueAsString(contact));
+    }
+}
+*************
+package com.thales.ife.avionics.sparkstreaming
+
+import org.slf4j.LoggerFactory
+import java.util.Properties
+import java.io.FileInputStream
+import org.apache.spark.SparkConf
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.SQLContext
+import org.apache.spark.streaming.StreamingContext
+import org.apache.spark.streaming.Seconds
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.streaming.kafka010.KafkaUtils
+import org.apache.spark.streaming.kafka010.LocationStrategies
+import org.apache.spark.streaming.kafka010.ConsumerStrategies
+import org.apache.spark.rdd.RDD
+import org.apache.spark.streaming.Time
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.types.StringType
+
+object KafkaWordCount {
+
+  //loggers
+  val logger = LoggerFactory.getLogger("KafkaWordCount")
+
+  case class Record(msg_data: String)
+
+  /*System.setProperty("spark.sql.warehouse.dir", "file:///D:/tmp")
+  */
+
+  def main(args: Array[String]) {
+    //load properites
+    val props = new Properties()
+    props.load(new FileInputStream("src/main/resources/input.properties"))
+
+    //creating contexts
+    val conf = new SparkConf().setMaster("local[2]").setAppName("Kafka Word Count").set("spark.driver.allowMultipleContexts", "true")
+      .set("spark.sql.warehouse.dir", "file:///tmp/spark-warehouse")
+    val sc = new SparkContext(conf)
+    val sqlContext = new SQLContext(sc)
+    val ssc = new StreamingContext(conf, Seconds(10))
+    val spark = SparkSession.builder().getOrCreate()
+
+    val kafkaParams = Map[String, Object](
+      "bootstrap.servers" -> "localhost:9093",
+      "key.deserializer" -> classOf[StringDeserializer],
+      "value.deserializer" -> classOf[StringDeserializer],
+      "group.id" -> "test_group2",
+      "partition.assignment.strategy" -> "org.apache.kafka.clients.consumer.RangeAssignor")
+
+    val topicsSet = List("test2").toSet
+
+    val kafkaStream = KafkaUtils.createDirectStream[String, Array[Byte]](ssc, LocationStrategies.PreferConsistent, ConsumerStrategies.Subscribe[String, Array[Byte]](topicsSet, kafkaParams))
+
+    val messages = kafkaStream.map(record => record.value.toString())
+
+    messages.foreachRDD { (rdd: RDD[String], time: Time) =>
+
+      import spark.implicits._
+      val rowRDD = rdd.map(w => Row(w))
+
+      val schema = StructType(
+        List(
+          StructField("word", StringType, true)))
+
+      val wordsDataFrame = sqlContext.createDataFrame(rowRDD, schema)
+
+      println(wordsDataFrame.toDF().printSchema())
+
+      wordsDataFrame.createOrReplaceTempView("words_table")
+      val wordCountsDataFrame =
+        sqlContext.sql("select word, count(*) as total from words_table group by word")
+      println(s"========= $time =========")
+      println(wordCountsDataFrame.foreach(row => print(row)))
+
+    }
+
+    messages.print()
+
+    //start and stop of streaming contexts
+    ssc.start()
+    ssc.awaitTermination()
+  }
+
+}
+*************************
+package com.thales.ife.avionics.sparkstreaming
+
+import org.slf4j.LoggerFactory
+import org.slf4j.Logger
+import java.util.Properties
+import java.io.FileInputStream
+import org.apache.spark.SparkConf
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.streaming.StreamingContext
+import org.apache.spark.streaming.Seconds
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.DataFrame
+
+object NetworkWordCount {
+
+  val logger=LoggerFactory.getLogger("NetworkWordCount")
+      
+  def main(args:Array[String]){
+    
+
+    
+    //read properties
+    val props=new Properties()  
+    props.load(new FileInputStream(args(0).toString()))
+   
+    //creating contexts
+    val conf= new SparkConf().setMaster("local[*]").setAppName("Network word count")
+    val sc = new SparkContext(conf)
+    val hc = new HiveContext(sc)
+    val ssc= new StreamingContext(sc,Seconds(10))
+
+    val hostName=props.getProperty("host_name").toString()
+    val portNumber=props.getProperty("port_number").toInt
+    
+    //socket Stream
+    val messages=ssc.socketTextStream(hostName, portNumber, StorageLevel.MEMORY_ONLY)
+    val lines=messages.flatMap(_.split(" ")).map(word => (word,1)).reduceByKey((x,y) => x+y)
+    
+lines.print()
+    
+    
+    
+    //starting streaming context and awaitTermination
+    ssc.start()
+    ssc.awaitTermination()
+    
+  }
+  
+}
+*******************
+package com.thales.ife.avionics.sparkstreaming;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import java.util.Properties;
+import java.util.Scanner;
+
+
+
+public class Producer {
+    private static Scanner in;
+    public static void main(String[] argv)throws Exception {
+        if (argv.length != 1) {
+            System.err.println("Please specify 1 parameters ");
+            System.exit(-1);
+        }
+        String topicName = argv[0];
+        in = new Scanner(System.in);
+        System.out.println("Enter message(type exit to quit)");
+
+        //Configure the Producer
+        Properties configProperties = new Properties();
+        configProperties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,"localhost:9093");
+        configProperties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,"org.apache.kafka.common.serialization.ByteArraySerializer");
+        configProperties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,"org.apache.kafka.connect.json.JsonSerializer");
+
+        org.apache.kafka.clients.producer.Producer producer = new KafkaProducer(configProperties);
+
+        ObjectMapper objectMapper = new ObjectMapper();
+
+        String line = in.nextLine();
+        while(!line.equals("exit")) {
+            Contact contact = new Contact();
+            contact.parseString(line);
+            JsonNode  jsonNode = objectMapper.valueToTree(contact);
+            ProducerRecord<String, JsonNode> rec = new ProducerRecord<String, JsonNode>(topicName,jsonNode);
+            producer.send(rec);
+            line = in.nextLine();
+        }
+        in.close();
+        producer.close();
+    }
+}
+
+***********************
+package com.thales.ife.avionics.sparkstreaming
+
+import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.streaming.{Seconds, StreamingContext, Time}
+import org.apache.spark.streaming.kafka010.LocationStrategies
+import org.apache.spark.streaming.kafka010.KafkaUtils
+import org.apache.spark.streaming.kafka010.ConsumerStrategies
+import org.apache.kafka.common.serialization.StringDeserializer
+
+
+/**
+ * Use DataFrames and SQL to count words in UTF8 encoded, '\n' delimited text received from the
+ * network every second.
+ *
+ * Usage: SqlNetworkWordCount <hostname> <port>
+ * <hostname> and <port> describe the TCP server that Spark Streaming would connect to receive data.
+ *
+ * To run this on your local machine, you need to first run a Netcat server
+ *    `$ nc -lk 9999`
+ * and then run the example
+ *    `$ bin/run-example org.apache.spark.examples.streaming.SqlNetworkWordCount localhost 9999`
+ */
+
+object SqlNetworkWordCount {
+  def main(args: Array[String]) {
+    if (args.length < 2) {
+      System.err.println("Usage: NetworkWordCount <hostname> <port>")
+      System.exit(1)
+    }
+
+
+    // Create the context with a 2 second batch size
+    val sparkConf = new SparkConf().setAppName("SqlNetworkWordCount")
+    val ssc = new StreamingContext(sparkConf, Seconds(2))
+    val spark = SparkSessionSingleton.getInstance(sparkConf)
+      
+    // Create a socket stream on target ip:port and count the
+    // words in input stream of \n delimited text (eg. generated by 'nc')
+    // Note that no duplication in storage level only for running locally.
+    // Replication necessary in distributed scenario for fault tolerance.
+  val kafkaParams=Map[String, Object]("bootstrap.servers" -> "localhost:9093",
+  "key.deserializer" -> classOf[StringDeserializer],
+  "value.deserializer" -> classOf[StringDeserializer],
+  "group.id" -> "test_group2",
+  "partition.assignment.strategy" -> "org.apache.kafka.clients.consumer.RangeAssignor")
+  
+   val topicsSet=List("test2").toSet
+   
+  val kafkaStream = KafkaUtils.createDirectStream[String, Array[Byte]](ssc, LocationStrategies.PreferConsistent
+                                                , ConsumerStrategies.Subscribe[String, Array[Byte]](topicsSet, kafkaParams))
+  
+                                                
+   val messages=kafkaStream.map(record =>  record.value.toString())
+
+    // Convert RDDs of the words DStream to DataFrame and run SQL query
+    messages.foreachRDD { (rdd: RDD[String], time: Time) =>
+      // Get the singleton instance of SparkSession
+
+      import spark.implicits._
+      // Convert RDD[String] to RDD[case class] to DataFrame
+      val wordsDataFrame = rdd.map(w => Record(w)).toDF()
+
+      // Creates a temporary view using the DataFrame
+      wordsDataFrame.createOrReplaceTempView("words")
+
+      // Do word count on table using SQL and print it
+      val wordCountsDataFrame =
+        spark.sql("select word, count(*) as total from words group by word")
+      println(s"========= $time =========")
+      wordCountsDataFrame.show()
+    }
+
+    ssc.start()
+    ssc.awaitTermination()
+  }
+}
+
+
+/** Case class for converting RDD to DataFrame */
+case class Record(word: String)
+
+
+/** Lazily instantiated singleton instance of SparkSession */
+object SparkSessionSingleton {
+
+  private var instance: SparkSession = _
+
+  def getInstance(sparkConf: SparkConf): SparkSession = {
+    if (instance == null) {
+      instance = SparkSession
+        .builder
+        .config(sparkConf)
+        .getOrCreate()
+    }
+    instance
+  }
+}
+****************************************
+
+https://github.com/apache/spark/tree/master/examples/src/main/scala/org/apache/spark/examples/streaming
+
